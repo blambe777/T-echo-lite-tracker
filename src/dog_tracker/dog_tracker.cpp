@@ -8,16 +8,32 @@
 // User settings. Change these values, rebuild, and upload.
 static const bool TRACKER_HAS_DISPLAY = false;
 static const char DOG_NAME[] = "Clodagh-Test";
-static const char TRACKER_MODE[] = "GPS_BATTERY_TEST";
 static const float LORA_FREQUENCY_MHZ = 868.0;
 static const uint8_t LORA_SYNC_WORD = 0x12; // Standard private LoRa sync word; compatible with SX1262 and SX1276.
-static const uint32_t LOCATION_SEND_INTERVAL_MS = 60000;
 static const uint32_t GPS_FRESH_FIX_MAX_AGE_MS = 30000;
 static const bool BLE_STATUS_LED_ENABLED = false;
 static const bool GPS_RAW_NMEA_DEBUG = true;
 static const uint32_t GPS_RAW_NMEA_WINDOW_MS = 120000;
 static const uint32_t BUTTON_DEBOUNCE_MS = 40;
 static const uint32_t BUTTON_LONG_PRESS_MS = 1500;
+static const uint32_t BUTTON_VERY_LONG_PRESS_MS = 5000;
+static const uint32_t COMMAND_RECEIVE_WINDOW_MS = 2000;
+static const uint32_t HOME_SEND_INTERVAL_MS = 3600000;
+static const uint32_t MONITORING_SEND_INTERVAL_MS = 3600000;
+static const uint32_t ACTIVITY_SEND_INTERVAL_MS = 10000;
+static const uint32_t SEARCH_SEND_INTERVAL_MS = 30000;
+static const uint32_t EMERGENCY_SEND_INTERVAL_MS = 5000;
+static const uint32_t EMERGENCY_AUTO_EXIT_MS = 600000;
+static const uint32_t BLE_HOME_LOST_MS = 300000;
+
+enum TrackerMode
+{
+    MODE_HOME = 0,
+    MODE_MONITORING,
+    MODE_ACTIVITY,
+    MODE_SEARCH,
+    MODE_EMERGENCY
+};
 
 struct LocationSnapshot
 {
@@ -53,9 +69,14 @@ uint32_t lastGpsDebugMs = 0;
 uint32_t lastRadioInitAttemptMs = 0;
 uint32_t buttonPressedAtMs = 0;
 uint32_t lastButtonChangeMs = 0;
+uint32_t lastLedPatternMs = 0;
+uint32_t ledPulseUntilMs = 0;
+uint32_t lastHomeBleSeenMs = 0;
+uint32_t modeStartedMs = 0;
 bool lastButtonLevel = HIGH;
 bool stableButtonLevel = HIGH;
 bool buttonLongPressHandled = false;
+bool buttonSearchPressHandled = false;
 int lastLoRaState = RADIOLIB_ERR_NONE;
 float lastBatteryVoltage = 0.0f;
 uint8_t lastBatteryPercent = 0;
@@ -65,6 +86,10 @@ uint32_t lastTxMs = 0;
 String deviceId = "unknown";
 uint32_t bootMs = 0;
 String gpsRawLine = "";
+TrackerMode currentMode = MODE_ACTIVITY;
+bool gpsPowered = true;
+bool homeBleSeen = false;
+uint32_t appliedCommandCounter = 0;
 
 void emergencyButtonISR()
 {
@@ -72,6 +97,130 @@ void emergencyButtonISR()
 }
 
 uint8_t readBatteryPercent(float voltage);
+void sendLocationPacket(const char *eventName);
+
+const char *modeName(TrackerMode mode)
+{
+    switch (mode)
+    {
+    case MODE_HOME:
+        return "HOME";
+    case MODE_MONITORING:
+        return "MONITORING";
+    case MODE_ACTIVITY:
+        return "ACTIVITY";
+    case MODE_SEARCH:
+        return "SEARCH";
+    case MODE_EMERGENCY:
+        return "EMERGENCY";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+TrackerMode modeFromName(const String &name, TrackerMode fallback)
+{
+    if (name == "HOME")
+        return MODE_HOME;
+    if (name == "MONITORING" || name == "MONITOR")
+        return MODE_MONITORING;
+    if (name == "ACTIVITY")
+        return MODE_ACTIVITY;
+    if (name == "SEARCH")
+        return MODE_SEARCH;
+    if (name == "EMERGENCY")
+        return MODE_EMERGENCY;
+    return fallback;
+}
+
+uint32_t modeSendIntervalMs(TrackerMode mode)
+{
+    switch (mode)
+    {
+    case MODE_HOME:
+        return HOME_SEND_INTERVAL_MS;
+    case MODE_MONITORING:
+        return MONITORING_SEND_INTERVAL_MS;
+    case MODE_ACTIVITY:
+        return ACTIVITY_SEND_INTERVAL_MS;
+    case MODE_SEARCH:
+        return SEARCH_SEND_INTERVAL_MS;
+    case MODE_EMERGENCY:
+        return EMERGENCY_SEND_INTERVAL_MS;
+    default:
+        return MONITORING_SEND_INTERVAL_MS;
+    }
+}
+
+bool modeWantsGps(TrackerMode mode)
+{
+    return mode != MODE_HOME;
+}
+
+void setLed(uint32_t pin, bool on)
+{
+    digitalWrite(pin, on ? LOW : HIGH);
+}
+
+void allLedsOff()
+{
+    setLed(LED_1, false);
+    setLed(LED_2, false);
+    setLed(LED_3, false);
+}
+
+void pulseLed(uint32_t pin, uint16_t durationMs = 80)
+{
+    allLedsOff();
+    setLed(pin, true);
+    ledPulseUntilMs = millis() + durationMs;
+}
+
+void setGpsPower(bool on)
+{
+    if (gpsPowered == on)
+    {
+        return;
+    }
+
+    gpsPowered = on;
+    if (gpsPowered)
+    {
+        pinMode(GPS_RT9080_EN, OUTPUT);
+        digitalWrite(GPS_RT9080_EN, HIGH);
+        pinMode(GPS_WAKE_UP, OUTPUT);
+        digitalWrite(GPS_WAKE_UP, HIGH);
+        Serial2.setPins(GPS_UART_RX, GPS_UART_TX);
+        Serial2.begin(9600);
+        Serial.println("GPS power ON");
+    }
+    else
+    {
+        Serial2.end();
+        digitalWrite(GPS_WAKE_UP, LOW);
+        pinMode(GPS_WAKE_UP, INPUT_PULLDOWN);
+        digitalWrite(GPS_RT9080_EN, LOW);
+        pinMode(GPS_RT9080_EN, INPUT_PULLDOWN);
+        gpsRawLine = "";
+        Serial.println("GPS power OFF");
+    }
+}
+
+void applyMode(TrackerMode mode, const char *reason)
+{
+    if (currentMode == mode && modeStartedMs != 0)
+    {
+        return;
+    }
+
+    currentMode = mode;
+    modeStartedMs = millis();
+    setGpsPower(modeWantsGps(currentMode));
+    Serial.print("Mode changed to ");
+    Serial.print(modeName(currentMode));
+    Serial.print(" reason=");
+    Serial.println(reason);
+}
 
 // The LilyGO SX126x example uses these two RF switch pins for TX/RX routing.
 void setLoRaTransmitSwitch(bool transmitting)
@@ -178,8 +327,32 @@ String fixed1(double value)
     return String(value, 1);
 }
 
+String fieldAt(const String &text, uint8_t index)
+{
+    uint8_t current = 0;
+    int start = 0;
+    for (int i = 0; i <= text.length(); i++)
+    {
+        if (i == text.length() || text[i] == ',')
+        {
+            if (current == index)
+            {
+                return text.substring(start, i);
+            }
+            current++;
+            start = i + 1;
+        }
+    }
+    return "";
+}
+
 void serviceGps()
 {
+    if (!gpsPowered)
+    {
+        return;
+    }
+
     while (Serial2.available() > 0)
     {
         const char c = (char)Serial2.read();
@@ -210,6 +383,20 @@ LocationSnapshot readLocationSnapshot()
     serviceGps();
 
     LocationSnapshot snapshot;
+    if (!gpsPowered)
+    {
+        snapshot.valid = false;
+        snapshot.latitude = 0.0;
+        snapshot.longitude = 0.0;
+        snapshot.altitudeMeters = 0.0;
+        snapshot.ageMs = 0;
+        snapshot.charsProcessed = gps.charsProcessed();
+        snapshot.satellites = 0;
+        snapshot.hdop = 0.0f;
+        snapshot.fresh = false;
+        return snapshot;
+    }
+
     snapshot.ageMs = gps.location.age();
     snapshot.satellites = gps.satellites.isValid() ? gps.satellites.value() : 0;
     snapshot.hdop = gps.hdop.isValid() ? gps.hdop.hdop() : 0.0f;
@@ -292,9 +479,9 @@ String buildPacket(const LocationSnapshot &location, float batteryVoltage, const
     body += ",";
     body += String((uint16_t)(batteryVoltage * 1000.0f));
     body += ",";
-    body += TRACKER_MODE;
+    body += modeName(currentMode);
     body += ",";
-    body += String(LOCATION_SEND_INTERVAL_MS / 1000);
+    body += String(modeSendIntervalMs(currentMode) / 1000);
     body += ",";
     body += String(millis() / 1000);
     body += ",";
@@ -319,6 +506,73 @@ String buildPacket(const LocationSnapshot &location, float batteryVoltage, const
     char crcText[8];
     snprintf(crcText, sizeof(crcText), "%04X", crc16Ccitt(body));
     return body + "*" + crcText;
+}
+
+bool parseCommandPacket(const String &raw)
+{
+    const int star = raw.lastIndexOf('*');
+    if (star < 0 || star + 5 > raw.length())
+    {
+        return false;
+    }
+
+    const String body = raw.substring(0, star);
+    const String crcText = raw.substring(star + 1);
+    const uint16_t sentCrc = (uint16_t)strtoul(crcText.c_str(), nullptr, 16);
+    if (sentCrc != crc16Ccitt(body))
+    {
+        Serial.println("Command ignored: CRC mismatch");
+        return false;
+    }
+
+    if (fieldAt(body, 0) != "CMD1")
+    {
+        return false;
+    }
+
+    const String targetId = fieldAt(body, 1);
+    if (targetId != deviceId && targetId != "*")
+    {
+        Serial.print("Command ignored: target=");
+        Serial.println(targetId);
+        return false;
+    }
+
+    const String modeText = fieldAt(body, 2);
+    const uint32_t commandCounter = (uint32_t)fieldAt(body, 3).toInt();
+    if (commandCounter != 0 && commandCounter == appliedCommandCounter)
+    {
+        Serial.println("Command ignored: already applied");
+        return false;
+    }
+
+    appliedCommandCounter = commandCounter;
+    applyMode(modeFromName(modeText, currentMode), "LORA_COMMAND");
+    pulseLed(LED_2, 250);
+    return true;
+}
+
+void listenForCommand()
+{
+    if (!radioReady)
+    {
+        return;
+    }
+
+    String command;
+    setLoRaTransmitSwitch(false);
+    const int state = radio.receive(command, COMMAND_RECEIVE_WINDOW_MS);
+    if (state == RADIOLIB_ERR_NONE)
+    {
+        Serial.print("LoRa RX command: ");
+        Serial.println(command);
+        parseCommandPacket(command);
+    }
+    else if (state != RADIOLIB_ERR_RX_TIMEOUT)
+    {
+        Serial.print("LoRa command receive state=");
+        Serial.println(state);
+    }
 }
 
 void updateDisplay(const char *status, const LocationSnapshot &location, float batteryVoltage)
@@ -366,6 +620,8 @@ void connectCallback(uint16_t connHandle)
 {
     (void)connHandle;
     bleConnected = true;
+    homeBleSeen = true;
+    lastHomeBleSeenMs = millis();
     Serial.println("BLE connected");
 }
 
@@ -375,6 +631,75 @@ void disconnectCallback(uint16_t connHandle, uint8_t reason)
     bleConnected = false;
     Serial.print("BLE disconnected, reason=0x");
     Serial.println(reason, HEX);
+}
+
+void updateModeAutomation()
+{
+    if (bleConnected)
+    {
+        homeBleSeen = true;
+        lastHomeBleSeenMs = millis();
+    }
+
+    if (currentMode == MODE_EMERGENCY && millis() - modeStartedMs >= EMERGENCY_AUTO_EXIT_MS)
+    {
+        applyMode(MODE_SEARCH, "EMERGENCY_TIMEOUT");
+    }
+
+    if (currentMode == MODE_HOME && homeBleSeen && millis() - lastHomeBleSeenMs >= BLE_HOME_LOST_MS)
+    {
+        applyMode(MODE_SEARCH, "BLE_HOME_LOST");
+        sendLocationPacket("MODE");
+    }
+}
+
+void updateLedPattern()
+{
+    const uint32_t now = millis();
+    if (ledPulseUntilMs && now < ledPulseUntilMs)
+    {
+        return;
+    }
+    if (ledPulseUntilMs && now >= ledPulseUntilMs)
+    {
+        ledPulseUntilMs = 0;
+        allLedsOff();
+    }
+
+    uint32_t periodMs = 30000;
+    uint32_t ledPin = LED_2;
+    uint16_t pulseMs = 60;
+
+    switch (currentMode)
+    {
+    case MODE_HOME:
+        periodMs = 30000;
+        ledPin = LED_2;
+        break;
+    case MODE_MONITORING:
+        periodMs = 15000;
+        ledPin = LED_2;
+        break;
+    case MODE_ACTIVITY:
+        periodMs = 10000;
+        ledPin = LED_1;
+        break;
+    case MODE_SEARCH:
+        periodMs = 3000;
+        ledPin = LED_1;
+        break;
+    case MODE_EMERGENCY:
+        periodMs = 1000;
+        ledPin = (now / 1000) % 2 ? LED_1 : LED_2;
+        pulseMs = 120;
+        break;
+    }
+
+    if (now - lastLedPatternMs >= periodMs)
+    {
+        lastLedPatternMs = now;
+        pulseLed(ledPin, pulseMs);
+    }
 }
 
 void sendLocationPacket(const char *eventName)
@@ -410,6 +735,7 @@ void sendLocationPacket(const char *eventName)
         setLoRaTransmitSwitch(true);
         lastLoRaState = radio.transmit(packet);
         setLoRaTransmitSwitch(false);
+        listenForCommand();
         radio.sleep();
         Serial.print("LoRa TX result=");
         Serial.println(lastLoRaState);
@@ -428,7 +754,21 @@ void sendLocationPacket(const char *eventName)
 
 void cycleDisplayScreen()
 {
-    Serial.println("Display disabled; short button press ignored");
+    TrackerMode next = MODE_ACTIVITY;
+    if (currentMode == MODE_ACTIVITY)
+    {
+        next = MODE_MONITORING;
+    }
+    else if (currentMode == MODE_MONITORING)
+    {
+        next = MODE_HOME;
+    }
+    else
+    {
+        next = MODE_ACTIVITY;
+    }
+    applyMode(next, "BUTTON_SHORT");
+    sendLocationPacket("MODE");
 }
 
 void handleButton()
@@ -444,7 +784,14 @@ void handleButton()
 
     if ((now - lastButtonChangeMs) < BUTTON_DEBOUNCE_MS || level == stableButtonLevel)
     {
-        if (stableButtonLevel == LOW && !buttonLongPressHandled && (now - buttonPressedAtMs) >= BUTTON_LONG_PRESS_MS)
+        if (stableButtonLevel == LOW && !buttonSearchPressHandled && (now - buttonPressedAtMs) >= BUTTON_LONG_PRESS_MS)
+        {
+            buttonSearchPressHandled = true;
+            applyMode(MODE_SEARCH, "BUTTON_LONG");
+            sendLocationPacket("MODE");
+        }
+
+        if (stableButtonLevel == LOW && !buttonLongPressHandled && (now - buttonPressedAtMs) >= BUTTON_VERY_LONG_PRESS_MS)
         {
             buttonLongPressHandled = true;
             emergencyRequested = true;
@@ -457,6 +804,7 @@ void handleButton()
     {
         buttonPressedAtMs = now;
         buttonLongPressHandled = false;
+        buttonSearchPressHandled = false;
     }
     else if (!buttonLongPressHandled)
     {
@@ -534,6 +882,7 @@ void setup()
     Serial.println(DOG_NAME);
     Serial.print("LoRa frequency MHz: ");
     Serial.println(LORA_FREQUENCY_MHZ, 3);
+    applyMode(currentMode, "BOOT_DEFAULT");
 
     LocationSnapshot location = readLocationSnapshot();
     lastLocation = location;
@@ -551,10 +900,14 @@ void loop()
     {
         emergencyRequested = false;
         Serial.println("Emergency button pressed");
+        applyMode(MODE_EMERGENCY, "EMERGENCY_BUTTON");
         sendLocationPacket("EMERGENCY");
     }
 
-    if (millis() - lastLocationSendMs >= LOCATION_SEND_INTERVAL_MS)
+    updateModeAutomation();
+    updateLedPattern();
+
+    if (millis() - lastLocationSendMs >= modeSendIntervalMs(currentMode))
     {
         sendLocationPacket("PERIODIC");
     }

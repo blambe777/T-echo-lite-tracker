@@ -143,6 +143,9 @@ bool wifiHasCredentials = false;
 bool fallbackApStarted = false;
 uint32_t wifiLastRetry = 0;
 uint32_t wifiLastStatusCheck = 0;
+String pendingTrackerMode[2] = {"", ""};
+uint32_t pendingCommandCounter[2] = {0, 0};
+uint32_t commandCounter = 0;
 
 void drawOled();
 
@@ -260,6 +263,31 @@ String trackerDeviceId(uint8_t slot)
 String trackerName(uint8_t slot)
 {
     return slot == 2 ? String("Clodagh Tracker 2") : String("Clodagh Tracker 1");
+}
+
+const char *trackerKnownDeviceId(uint8_t slot)
+{
+    return slot == 2 ? TRACKER_2_DEVICE_ID : TRACKER_1_DEVICE_ID;
+}
+
+bool validModeName(const String &mode)
+{
+    return mode == "HOME" || mode == "MONITORING" || mode == "ACTIVITY" ||
+           mode == "SEARCH" || mode == "EMERGENCY";
+}
+
+String buildCommandPacket(uint8_t slot)
+{
+    String body = "CMD1,";
+    body += trackerKnownDeviceId(slot);
+    body += ",";
+    body += pendingTrackerMode[slot - 1];
+    body += ",";
+    body += String(pendingCommandCounter[slot - 1]);
+
+    char crcText[8];
+    snprintf(crcText, sizeof(crcText), "%04X", crc16Ccitt(body));
+    return body + "*" + crcText;
 }
 
 String jsonEscape(const String &value)
@@ -407,6 +435,24 @@ void mqttPublishDeviceTrackerConfig(uint8_t slot)
     mqttClient.publish(topic.c_str(), payload.c_str(), true);
 }
 
+void mqttPublishModeSelectConfig(uint8_t slot)
+{
+    const String componentId = trackerDeviceId(slot);
+    const String displayName = trackerName(slot);
+    String topic = String(MQTT_DISCOVERY_PREFIX) + "/select/" + componentId + "/mode_command/config";
+    String payload = "{";
+    payload += "\"name\":\"Mode Command\",";
+    payload += "\"unique_id\":\"" + componentId + "_mode_command\",";
+    payload += "\"command_topic\":\"" + trackerTopic(slot, "mode/set") + "\",";
+    payload += "\"state_topic\":\"" + trackerTopic(slot, "mode") + "\",";
+    payload += "\"availability_topic\":\"" + trackerTopic(slot, "availability") + "\",";
+    payload += "\"payload_available\":\"online\",\"payload_not_available\":\"offline\",";
+    payload += "\"options\":[\"HOME\",\"MONITORING\",\"ACTIVITY\",\"SEARCH\",\"EMERGENCY\"],";
+    payload += deviceJson(componentId, displayName, "LILYGO", "T-Echo Lite");
+    payload += "}";
+    mqttClient.publish(topic.c_str(), payload.c_str(), true);
+}
+
 void publishHomeAssistantDiscovery()
 {
     const String baseId = "clodagh_base";
@@ -460,6 +506,7 @@ void publishHomeAssistantDiscovery()
         mqttPublishBinarySensorConfig(componentId, "radio_ready", "Radio Ready", trackerTopic(slot, "radio_ready"),
                                       availability, componentId, displayName);
         mqttPublishDeviceTrackerConfig(slot);
+        mqttPublishModeSelectConfig(slot);
     }
     mqttDiscoveryPublished = true;
     Serial.println("Clean Home Assistant MQTT discovery published");
@@ -565,6 +612,46 @@ void publishBaseStatusToMqtt()
     mqttPublishString(mqttTopic("receiving_packets"), latestPacket.valid && ageS < 180 ? "ON" : "OFF", true);
 }
 
+void handleMqttMessage(char *topic, byte *payload, unsigned int length)
+{
+    String topicText = topic;
+    String value;
+    value.reserve(length);
+    for (unsigned int i = 0; i < length; i++)
+    {
+        value += (char)payload[i];
+    }
+    value.trim();
+    value.toUpperCase();
+
+    uint8_t slot = 0;
+    if (topicText == trackerTopic(1, "mode/set"))
+    {
+        slot = 1;
+    }
+    else if (topicText == trackerTopic(2, "mode/set"))
+    {
+        slot = 2;
+    }
+
+    if (slot == 0 || !validModeName(value))
+    {
+        Serial.print("MQTT command ignored topic=");
+        Serial.print(topicText);
+        Serial.print(" value=");
+        Serial.println(value);
+        return;
+    }
+
+    pendingTrackerMode[slot - 1] = value;
+    pendingCommandCounter[slot - 1] = ++commandCounter;
+    mqttPublishString(trackerTopic(slot, "pending_mode"), value, true);
+    Serial.print("Queued mode command for tracker ");
+    Serial.print(slot);
+    Serial.print(": ");
+    Serial.println(value);
+}
+
 void handleMqtt()
 {
     if (!wifiStationMode || WiFi.status() != WL_CONNECTED)
@@ -601,6 +688,8 @@ void handleMqtt()
             Serial.println("MQTT connected");
             publishBaseStatusToMqtt();
             publishHomeAssistantDiscovery();
+            mqttClient.subscribe(trackerTopic(1, "mode/set").c_str());
+            mqttClient.subscribe(trackerTopic(2, "mode/set").c_str());
             if (latestPacket.valid)
             {
                 publishPacketToMqtt(latestPacket);
@@ -959,6 +1048,27 @@ void startRadio()
     Serial.println("SX1262 listening for collar packets");
 }
 
+void sendPendingCommandForPacket(const CollarPacket &packet)
+{
+    const uint8_t slot = trackerSlotForPacket(packet);
+    if (slot < 1 || slot > 2 || pendingTrackerMode[slot - 1].length() == 0)
+    {
+        return;
+    }
+
+    String command = buildCommandPacket(slot);
+    Serial.print("LoRa TX command: ");
+    Serial.println(command);
+    const int state = radio.transmit(command);
+    Serial.print("LoRa command TX state=");
+    Serial.println(state);
+    if (state == RADIOLIB_ERR_NONE)
+    {
+        mqttPublishString(trackerTopic(slot, "last_command"), pendingTrackerMode[slot - 1], true);
+        pendingTrackerMode[slot - 1] = "";
+    }
+}
+
 void setup()
 {
     Serial.begin(115200);
@@ -971,6 +1081,7 @@ void setup()
     startWiFi();
     startWebServer();
     mqttClient.setServer(MQTT_HOST, MQTT_PORT);
+    mqttClient.setCallback(handleMqttMessage);
     mqttClient.setBufferSize(1024);
     startRadio();
     drawOled();
@@ -996,6 +1107,7 @@ void loop()
                 Serial.print("RX OK: ");
                 Serial.println(packet);
                 publishPacketToMqtt(latestPacket);
+                sendPendingCommandForPacket(latestPacket);
             }
             else
             {
