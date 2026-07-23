@@ -7,7 +7,7 @@
 
 // User settings. Change these values, rebuild, and upload.
 static const bool TRACKER_HAS_DISPLAY = false;
-static const char DOG_NAME[] = "Clodagh";
+static const char DOG_NAME[] = "Clodagh-Test";
 static const char TRACKER_MODE[] = "GPS_BATTERY_TEST";
 static const float LORA_FREQUENCY_MHZ = 868.0;
 static const uint8_t LORA_SYNC_WORD = 0x12; // Standard private LoRa sync word; compatible with SX1262 and SX1276.

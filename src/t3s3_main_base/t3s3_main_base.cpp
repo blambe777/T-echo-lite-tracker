@@ -66,11 +66,9 @@ static const uint8_t LORA_SPREADING_FACTOR = 9;
 static const uint8_t LORA_CODING_RATE = 6;
 static const uint8_t LORA_SYNC_WORD = 0x12; // Standard private LoRa sync word; compatible with SX1262 and SX1276.
 static const uint16_t LORA_PREAMBLE_LENGTH = 16;
-static const uint32_t LORA_RECEIVE_TIMEOUT_MS = 6000;
-
 // LilyGO T3-S3 radio pins from LilyGO LoRa Series T3-S3 hardware docs.
-// This unit is the SX1276 868/915 MHz variant that already worked as the
-// portable receiver, so keep the same known-good radio wiring.
+// This base unit is the SX1276 868/915 MHz revision. These pins match LilyGO's
+// official T3-S3-SX1276 PingPong example.
 static const int LORA_SCK = 5;
 static const int LORA_MISO = 3;
 static const int LORA_MOSI = 6;
@@ -129,6 +127,7 @@ CollarPacket latestPacket;
 uint32_t receivedPackets = 0;
 uint32_t badPackets = 0;
 int lastRadioState = RADIOLIB_ERR_NONE;
+volatile bool radioPacketFlag = false;
 String lastBadPacket = "";
 String lastBadReason = "NONE";
 int16_t lastBadRssi = 0;
@@ -140,6 +139,11 @@ uint32_t mqttLastConnectAttempt = 0;
 uint32_t mqttLastHeartbeat = 0;
 uint32_t radioLastMaintenanceMs = 0;
 uint32_t radioLastTimeoutLogMs = 0;
+
+void setRadioPacketFlag()
+{
+    radioPacketFlag = true;
+}
 bool wifiHasCredentials = false;
 bool fallbackApStarted = false;
 uint32_t wifiLastRetry = 0;
@@ -1082,9 +1086,14 @@ void startRadio()
     }
     if (lastRadioState == RADIOLIB_ERR_NONE)
     {
-        // Keep hardware CRC permissive for SX1262-to-SX1276 interoperability;
-        // the tracker packet still has its own CRC-16 after the asterisk.
+        // The tracker packet has its own CRC-16 after the asterisk.
         lastRadioState = radio.setCRC(false);
+    }
+    if (lastRadioState == RADIOLIB_ERR_NONE)
+    {
+        radio.setPacketReceivedAction(setRadioPacketFlag);
+        radioPacketFlag = false;
+        lastRadioState = radio.startReceive();
     }
 
     Serial.println(lastRadioState);
@@ -1115,16 +1124,27 @@ void setup()
     drawOled();
 }
 
-void loop()
+void handleRadio()
 {
-    server.handleClient();
-    handleWiFi();
-    handleMqtt();
+    const uint32_t now = millis();
 
-    if (lastRadioState == RADIOLIB_ERR_NONE)
+    if (lastRadioState != RADIOLIB_ERR_NONE)
     {
+        if (now - radioLastMaintenanceMs > 30000)
+        {
+            radioLastMaintenanceMs = now;
+            Serial.println("LoRa radio not ready, restarting");
+            startRadio();
+            drawOled();
+        }
+        return;
+    }
+
+    if (radioPacketFlag)
+    {
+        radioPacketFlag = false;
         String packet;
-        const int state = radio.receive(packet, LORA_RECEIVE_TIMEOUT_MS);
+        const int state = radio.readData(packet);
         if (state == RADIOLIB_ERR_NONE)
         {
             receivedPackets++;
@@ -1157,38 +1177,46 @@ void loop()
             }
             drawOled();
         }
-        else if (state != RADIOLIB_ERR_RX_TIMEOUT)
-        {
-            lastRadioState = state;
-            Serial.print("LoRa receive error: ");
-            Serial.println(state);
-            drawOled();
-            delay(1000);
-            startRadio();
-        }
         else
         {
-            const uint32_t now = millis();
-            if (now - radioLastTimeoutLogMs > 30000)
-            {
-                radioLastTimeoutLogMs = now;
-                Serial.print("LoRa waiting, packets=");
-                Serial.print(receivedPackets);
-                Serial.print(" bad=");
-                Serial.println(badPackets);
-            }
+            Serial.print("LoRa read error: ");
+            Serial.println(state);
+        }
 
-            const bool noPacketYet = !latestPacket.valid;
-            const bool stalePacket = latestPacket.valid && (now - latestPacket.receivedAtMs > 180000);
-            if ((noPacketYet || stalePacket) && now - radioLastMaintenanceMs > 45000)
-            {
-                radioLastMaintenanceMs = now;
-                Serial.println("LoRa maintenance restart");
-                startRadio();
-                drawOled();
-            }
+        lastRadioState = radio.startReceive();
+        if (lastRadioState != RADIOLIB_ERR_NONE)
+        {
+            Serial.print("LoRa restart receive failed: ");
+            Serial.println(lastRadioState);
         }
     }
+
+    if (now - radioLastTimeoutLogMs > 30000)
+    {
+        radioLastTimeoutLogMs = now;
+        Serial.print("LoRa waiting, packets=");
+        Serial.print(receivedPackets);
+        Serial.print(" bad=");
+        Serial.println(badPackets);
+    }
+
+    const bool noPacketYet = !latestPacket.valid;
+    const bool stalePacket = latestPacket.valid && (now - latestPacket.receivedAtMs > 180000);
+    if ((noPacketYet || stalePacket) && now - radioLastMaintenanceMs > 180000)
+    {
+        radioLastMaintenanceMs = now;
+        Serial.println("LoRa maintenance restart");
+        startRadio();
+        drawOled();
+    }
+}
+
+void loop()
+{
+    server.handleClient();
+    handleWiFi();
+    handleMqtt();
+    handleRadio();
 
     static uint32_t lastOledRefresh = 0;
     if (millis() - lastOledRefresh > 5000)
