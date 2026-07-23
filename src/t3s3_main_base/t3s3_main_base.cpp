@@ -243,6 +243,16 @@ String mqttTopic(const String &name)
     return String(MQTT_BASE_TOPIC) + "/" + name;
 }
 
+String testTrackerMqttTopic(const String &name)
+{
+    return String("clodagh_test_tracker/") + name;
+}
+
+bool isTestTracker(const CollarPacket &packet)
+{
+    return packet.dogName == "Clodagh-Test" || packet.deviceId == "8193456441F2C48E";
+}
+
 String baseMqttTopic(const String &name)
 {
     return String(MQTT_BASE_STATION_TOPIC) + "/" + name;
@@ -454,6 +464,19 @@ void mqttPublishDeviceTrackerConfig()
     payload += "\",\"payload_available\":\"online\",\"payload_not_available\":\"offline\",";
     payload += "\"device\":{\"identifiers\":[\"clodagh_tracker_base\"],\"name\":\"Clodagh Tracker Base\",\"manufacturer\":\"LILYGO\",\"model\":\"T3-S3 SX1276\"}}";
     mqttClient.publish(topic.c_str(), payload.c_str(), true);
+
+    topic = String(MQTT_DISCOVERY_PREFIX) + "/device_tracker/clodagh_test_tracker/location/config";
+    payload = "{";
+    payload += "\"name\":\"Clodagh Test Location\",";
+    payload += "\"unique_id\":\"clodagh_test_tracker_location\",";
+    payload += "\"source_type\":\"gps\",";
+    payload += "\"json_attributes_topic\":\"";
+    payload += testTrackerMqttTopic("location");
+    payload += "\",\"availability_topic\":\"";
+    payload += mqttTopic("availability");
+    payload += "\",\"payload_available\":\"online\",\"payload_not_available\":\"offline\",";
+    payload += "\"device\":{\"identifiers\":[\"clodagh_test_tracker\"],\"name\":\"Clodagh Test Tracker\",\"manufacturer\":\"LILYGO\",\"model\":\"T-Echo Lite\"}}";
+    mqttClient.publish(topic.c_str(), payload.c_str(), true);
 }
 
 void mqttPublishBaseBinarySensorConfig(const char *objectId, const char *name, const char *stateTopic,
@@ -641,7 +664,7 @@ void publishPacketToMqtt(const CollarPacket &packet)
         locationJson += "\"rssi\":" + String(packet.rssi) + ",";
         locationJson += "\"snr\":" + String(packet.snr, 1);
         locationJson += "}";
-        mqttPublishString(mqttTopic("location"), locationJson, true);
+        mqttPublishString(isTestTracker(packet) ? testTrackerMqttTopic("location") : mqttTopic("location"), locationJson, true);
     }
 
     String json = "{";
