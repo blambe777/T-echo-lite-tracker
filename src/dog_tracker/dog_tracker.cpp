@@ -71,8 +71,12 @@ uint32_t buttonPressedAtMs = 0;
 uint32_t lastButtonChangeMs = 0;
 uint32_t lastLedPatternMs = 0;
 uint32_t ledPulseUntilMs = 0;
+uint32_t ledSequenceNextMs = 0;
 uint32_t lastHomeBleSeenMs = 0;
 uint32_t modeStartedMs = 0;
+uint8_t ledSequencePulsesRemaining = 0;
+uint32_t ledSequencePin = LED_1;
+bool ledSequenceOn = false;
 bool lastButtonLevel = HIGH;
 bool stableButtonLevel = HIGH;
 bool buttonLongPressHandled = false;
@@ -176,6 +180,40 @@ void pulseLed(uint32_t pin, uint16_t durationMs = 80)
     ledPulseUntilMs = millis() + durationMs;
 }
 
+uint8_t modeBlinkCount(TrackerMode mode)
+{
+    switch (mode)
+    {
+    case MODE_HOME:
+        return 1;
+    case MODE_MONITORING:
+        return 2;
+    case MODE_ACTIVITY:
+        return 3;
+    case MODE_SEARCH:
+        return 4;
+    case MODE_EMERGENCY:
+        return 0;
+    default:
+        return 1;
+    }
+}
+
+uint32_t modeLedPin(TrackerMode mode)
+{
+    return (mode == MODE_HOME || mode == MODE_MONITORING) ? LED_2 : LED_1;
+}
+
+void startModeBlinkSequence()
+{
+    allLedsOff();
+    ledPulseUntilMs = 0;
+    ledSequenceOn = false;
+    ledSequencePin = modeLedPin(currentMode);
+    ledSequencePulsesRemaining = modeBlinkCount(currentMode);
+    ledSequenceNextMs = millis();
+}
+
 void setGpsPower(bool on)
 {
     if (gpsPowered == on)
@@ -216,6 +254,7 @@ void applyMode(TrackerMode mode, const char *reason)
     currentMode = mode;
     modeStartedMs = millis();
     setGpsPower(modeWantsGps(currentMode));
+    startModeBlinkSequence();
     Serial.print("Mode changed to ");
     Serial.print(modeName(currentMode));
     Serial.print(" reason=");
@@ -656,49 +695,46 @@ void updateModeAutomation()
 void updateLedPattern()
 {
     const uint32_t now = millis();
-    if (ledPulseUntilMs && now < ledPulseUntilMs)
+
+    if (currentMode == MODE_EMERGENCY)
+    {
+        if (now - lastLedPatternMs >= 500)
+        {
+            lastLedPatternMs = now;
+            allLedsOff();
+            setLed((now / 500) % 2 ? LED_1 : LED_2, true);
+        }
+        return;
+    }
+
+    if (ledSequencePulsesRemaining == 0 && !ledSequenceOn && now - lastLedPatternMs >= 5000)
+    {
+        lastLedPatternMs = now;
+        startModeBlinkSequence();
+    }
+
+    if (ledSequencePulsesRemaining == 0 && !ledSequenceOn)
     {
         return;
     }
-    if (ledPulseUntilMs && now >= ledPulseUntilMs)
+
+    if (now < ledSequenceNextMs)
     {
-        ledPulseUntilMs = 0;
-        allLedsOff();
+        return;
     }
 
-    uint32_t periodMs = 30000;
-    uint32_t ledPin = LED_2;
-    uint16_t pulseMs = 60;
-
-    switch (currentMode)
+    if (ledSequenceOn)
     {
-    case MODE_HOME:
-        periodMs = 30000;
-        ledPin = LED_2;
-        break;
-    case MODE_MONITORING:
-        periodMs = 15000;
-        ledPin = LED_2;
-        break;
-    case MODE_ACTIVITY:
-        periodMs = 10000;
-        ledPin = LED_1;
-        break;
-    case MODE_SEARCH:
-        periodMs = 3000;
-        ledPin = LED_1;
-        break;
-    case MODE_EMERGENCY:
-        periodMs = 1000;
-        ledPin = (now / 1000) % 2 ? LED_1 : LED_2;
-        pulseMs = 120;
-        break;
+        setLed(ledSequencePin, false);
+        ledSequenceOn = false;
+        ledSequencePulsesRemaining--;
+        ledSequenceNextMs = now + 180;
     }
-
-    if (now - lastLedPatternMs >= periodMs)
+    else
     {
-        lastLedPatternMs = now;
-        pulseLed(ledPin, pulseMs);
+        setLed(ledSequencePin, true);
+        ledSequenceOn = true;
+        ledSequenceNextMs = now + 160;
     }
 }
 
