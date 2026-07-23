@@ -1,0 +1,7 @@
+{
+    "name": "Adafruit Bluefruit nRF52 Libraries",
+    "build": {
+        "libLDFMode": "chain+",
+        "extraScript": "extra_script.py"
+    }
+}

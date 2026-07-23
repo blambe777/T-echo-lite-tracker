@@ -1,0 +1,12 @@
+.devcontainer
+.vscode
+.pio
+src/local_config.h
+*.log
+*.zip
+build
+sdkconfig
+sdkconfig.old
+dependencies.lock
+managed_components
+.clangd
