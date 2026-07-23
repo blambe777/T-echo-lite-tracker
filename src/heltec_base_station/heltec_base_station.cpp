@@ -44,9 +44,16 @@ static const char *MQTT_HOST = BASE_MQTT_HOST;
 static const uint16_t MQTT_PORT = 1883;
 static const char *MQTT_USER = BASE_MQTT_USER;
 static const char *MQTT_PASSWORD = BASE_MQTT_PASSWORD;
-static const char *MQTT_CLIENT_ID = "clodagh_heltec_base";
-static const char *MQTT_BASE_TOPIC = "clodagh_tracker";
+static const char *MQTT_CLIENT_ID = "cloda_heltec_base";
+static const char *MQTT_BASE_TOPIC = "cloda_base";
+static const char *MQTT_TRACKER_1_TOPIC = "cloda_tracker_1";
+static const char *MQTT_TRACKER_2_TOPIC = "cloda_tracker_2";
 static const char *MQTT_DISCOVERY_PREFIX = "homeassistant";
+
+// Known collar IDs. These let Home Assistant show each collar as its own tidy
+// device instead of mixing all received packets into the base station device.
+static const char *TRACKER_1_DEVICE_ID = "8193456441F2C48E"; // Current Clodagh-Test collar.
+static const char *TRACKER_2_DEVICE_ID = "9DFA83D5A49304E0"; // Original Clodagh collar.
 
 // Web OTA settings. Browse to http://<base-ip>/update and log in with these.
 static const char *OTA_USER = "admin";
@@ -231,6 +238,30 @@ String mqttTopic(const String &name)
     return String(MQTT_BASE_TOPIC) + "/" + name;
 }
 
+String trackerTopic(uint8_t slot, const String &name)
+{
+    return String(slot == 2 ? MQTT_TRACKER_2_TOPIC : MQTT_TRACKER_1_TOPIC) + "/" + name;
+}
+
+uint8_t trackerSlotForPacket(const CollarPacket &packet)
+{
+    if (packet.deviceId == TRACKER_2_DEVICE_ID)
+    {
+        return 2;
+    }
+    return 1;
+}
+
+String trackerDeviceId(uint8_t slot)
+{
+    return slot == 2 ? String("cloda_tracker_2") : String("cloda_tracker_1");
+}
+
+String trackerName(uint8_t slot)
+{
+    return slot == 2 ? String("Cloda Tracker 2") : String("Cloda Tracker 1");
+}
+
 String jsonEscape(const String &value)
 {
     String escaped;
@@ -268,20 +299,38 @@ String currentIsoTimestamp()
     return String(buffer);
 }
 
-void mqttPublishSensorConfig(const char *objectId, const char *name, const char *stateTopic,
+String deviceJson(const String &identifier, const String &name, const String &manufacturer, const String &model)
+{
+    String payload = "\"device\":{\"identifiers\":[\"";
+    payload += identifier;
+    payload += "\"],\"name\":\"";
+    payload += name;
+    payload += "\",\"manufacturer\":\"";
+    payload += manufacturer;
+    payload += "\",\"model\":\"";
+    payload += model;
+    payload += "\"}";
+    return payload;
+}
+
+void mqttPublishSensorConfig(const String &componentId, const String &objectId, const String &name,
+                             const String &stateTopic, const String &availabilityTopic,
+                             const String &deviceIdentifier, const String &deviceName,
                              const char *deviceClass = nullptr, const char *unit = nullptr,
                              const char *stateClass = nullptr)
 {
-    String topic = String(MQTT_DISCOVERY_PREFIX) + "/sensor/clodagh_tracker/" + objectId + "/config";
+    String topic = String(MQTT_DISCOVERY_PREFIX) + "/sensor/" + componentId + "/" + objectId + "/config";
     String payload = "{";
     payload += "\"name\":\"";
     payload += name;
-    payload += "\",\"unique_id\":\"clodagh_tracker_";
+    payload += "\",\"unique_id\":\"";
+    payload += componentId;
+    payload += "_";
     payload += objectId;
     payload += "\",\"state_topic\":\"";
     payload += stateTopic;
     payload += "\",\"availability_topic\":\"";
-    payload += mqttTopic("availability");
+    payload += availabilityTopic;
     payload += "\",\"payload_available\":\"online\",\"payload_not_available\":\"offline\"";
     if (deviceClass)
     {
@@ -301,23 +350,30 @@ void mqttPublishSensorConfig(const char *objectId, const char *name, const char 
         payload += stateClass;
         payload += "\"";
     }
-    payload += ",\"device\":{\"identifiers\":[\"clodagh_tracker_base\"],\"name\":\"Clodagh Tracker Base\",\"manufacturer\":\"Heltec\",\"model\":\"WiFi LoRa 32 V3\"}}";
+    payload += ",";
+    payload += deviceJson(deviceIdentifier, deviceName, deviceIdentifier == "cloda_base" ? "Heltec" : "LILYGO",
+                          deviceIdentifier == "cloda_base" ? "WiFi LoRa 32 V3" : "T-Echo Lite");
+    payload += "}";
     mqttClient.publish(topic.c_str(), payload.c_str(), true);
 }
 
-void mqttPublishBinarySensorConfig(const char *objectId, const char *name, const char *stateTopic,
+void mqttPublishBinarySensorConfig(const String &componentId, const String &objectId, const String &name,
+                                   const String &stateTopic, const String &availabilityTopic,
+                                   const String &deviceIdentifier, const String &deviceName,
                                    const char *deviceClass = nullptr)
 {
-    String topic = String(MQTT_DISCOVERY_PREFIX) + "/binary_sensor/clodagh_tracker/" + objectId + "/config";
+    String topic = String(MQTT_DISCOVERY_PREFIX) + "/binary_sensor/" + componentId + "/" + objectId + "/config";
     String payload = "{";
     payload += "\"name\":\"";
     payload += name;
-    payload += "\",\"unique_id\":\"clodagh_tracker_";
+    payload += "\",\"unique_id\":\"";
+    payload += componentId;
+    payload += "_";
     payload += objectId;
     payload += "\",\"state_topic\":\"";
     payload += stateTopic;
     payload += "\",\"payload_on\":\"ON\",\"payload_off\":\"OFF\",\"availability_topic\":\"";
-    payload += mqttTopic("availability");
+    payload += availabilityTopic;
     payload += "\"";
     if (deviceClass)
     {
@@ -325,54 +381,88 @@ void mqttPublishBinarySensorConfig(const char *objectId, const char *name, const
         payload += deviceClass;
         payload += "\"";
     }
-    payload += ",\"device\":{\"identifiers\":[\"clodagh_tracker_base\"],\"name\":\"Clodagh Tracker Base\",\"manufacturer\":\"Heltec\",\"model\":\"WiFi LoRa 32 V3\"}}";
+    payload += ",";
+    payload += deviceJson(deviceIdentifier, deviceName, deviceIdentifier == "cloda_base" ? "Heltec" : "LILYGO",
+                          deviceIdentifier == "cloda_base" ? "WiFi LoRa 32 V3" : "T-Echo Lite");
+    payload += "}";
     mqttClient.publish(topic.c_str(), payload.c_str(), true);
 }
 
-void mqttPublishDeviceTrackerConfig()
+void mqttPublishDeviceTrackerConfig(uint8_t slot)
 {
-    String topic = String(MQTT_DISCOVERY_PREFIX) + "/device_tracker/clodagh_tracker/location/config";
+    const String componentId = trackerDeviceId(slot);
+    const String displayName = trackerName(slot);
+    String topic = String(MQTT_DISCOVERY_PREFIX) + "/device_tracker/" + componentId + "/location/config";
     String payload = "{";
-    payload += "\"name\":\"Clodagh Location\",";
-    payload += "\"unique_id\":\"clodagh_tracker_location\",";
+    payload += "\"name\":\"Location\",";
+    payload += "\"unique_id\":\"" + componentId + "_location\",";
     payload += "\"source_type\":\"gps\",";
     payload += "\"json_attributes_topic\":\"";
-    payload += mqttTopic("location");
+    payload += trackerTopic(slot, "location");
     payload += "\",\"availability_topic\":\"";
-    payload += mqttTopic("availability");
+    payload += trackerTopic(slot, "availability");
     payload += "\",\"payload_available\":\"online\",\"payload_not_available\":\"offline\",";
-    payload += "\"device\":{\"identifiers\":[\"clodagh_tracker_base\"],\"name\":\"Clodagh Tracker Base\",\"manufacturer\":\"Heltec\",\"model\":\"WiFi LoRa 32 V3\"}}";
+    payload += deviceJson(componentId, displayName, "LILYGO", "T-Echo Lite");
+    payload += "}";
     mqttClient.publish(topic.c_str(), payload.c_str(), true);
 }
 
 void publishHomeAssistantDiscovery()
 {
-    mqttPublishSensorConfig("dog_name", "Clodagh Dog Name", mqttTopic("dog_name").c_str());
-    mqttPublishSensorConfig("event", "Clodagh Event", mqttTopic("event").c_str());
-    mqttPublishSensorConfig("packet_counter", "Clodagh Packet Counter", mqttTopic("packet_counter").c_str());
-    mqttPublishSensorConfig("battery_mv", "Clodagh Battery", mqttTopic("battery_mv").c_str(), "voltage", "mV", "measurement");
-    mqttPublishSensorConfig("battery_percent", "Clodagh Battery Percent", mqttTopic("battery_percent").c_str(), "battery", "%", "measurement");
-    mqttPublishSensorConfig("tracker_mode", "Clodagh Tracker Mode", mqttTopic("tracker_mode").c_str());
-    mqttPublishSensorConfig("tracker_interval", "Clodagh Tracker Interval", mqttTopic("tracker_interval").c_str(), nullptr, "s", "measurement");
-    mqttPublishSensorConfig("tracker_uptime", "Clodagh Tracker Uptime", mqttTopic("tracker_uptime").c_str(), "duration", "s", "measurement");
-    mqttPublishSensorConfig("tracker_last_tx_code", "Clodagh Last TX Code", mqttTopic("tracker_last_tx_code").c_str());
-    mqttPublishSensorConfig("gps_chars", "Clodagh GPS Characters", mqttTopic("gps_chars").c_str(), nullptr, nullptr, "total_increasing");
-    mqttPublishSensorConfig("gps_age", "Clodagh GPS Age", mqttTopic("gps_age").c_str(), "duration", "ms", "measurement");
-    mqttPublishSensorConfig("gps_satellites", "Clodagh GPS Satellites", mqttTopic("gps_satellites").c_str(), nullptr, nullptr, "measurement");
-    mqttPublishSensorConfig("gps_hdop", "Clodagh GPS HDOP", mqttTopic("gps_hdop").c_str(), nullptr, nullptr, "measurement");
-    mqttPublishSensorConfig("latitude", "Clodagh Latitude", mqttTopic("latitude").c_str());
-    mqttPublishSensorConfig("longitude", "Clodagh Longitude", mqttTopic("longitude").c_str());
-    mqttPublishSensorConfig("rssi", "Clodagh LoRa RSSI", mqttTopic("rssi").c_str(), "signal_strength", "dBm", "measurement");
-    mqttPublishSensorConfig("snr", "Clodagh LoRa SNR", mqttTopic("snr").c_str(), nullptr, "dB", "measurement");
-    mqttPublishSensorConfig("last_seen", "Clodagh Last Seen", mqttTopic("last_seen").c_str(), "timestamp");
-    mqttPublishSensorConfig("raw_packet", "Clodagh Raw Packet", mqttTopic("raw_packet").c_str());
-    mqttPublishBinarySensorConfig("gps_fix", "Clodagh GPS Fix", mqttTopic("gps_fix").c_str());
-    mqttPublishBinarySensorConfig("tracker_radio_ready", "Clodagh Tracker Radio Ready", mqttTopic("tracker_radio_ready").c_str());
-    mqttPublishBinarySensorConfig("tracker_display", "Clodagh Tracker Display", mqttTopic("tracker_display").c_str());
-    mqttPublishBinarySensorConfig("tracker_ble", "Clodagh Tracker BLE Connected", mqttTopic("tracker_ble").c_str(), "connectivity");
-    mqttPublishDeviceTrackerConfig();
+    const String baseId = "cloda_base";
+    const String baseAvailability = mqttTopic("availability");
+    mqttPublishBinarySensorConfig(baseId, "receiving_packets", "Receiving Packets", mqttTopic("receiving_packets"),
+                                  baseAvailability, baseId, "Cloda Base Station", "connectivity");
+    mqttPublishSensorConfig(baseId, "received_packets", "Received Packets", mqttTopic("received_packets"),
+                            baseAvailability, baseId, "Cloda Base Station", nullptr, nullptr, "total_increasing");
+    mqttPublishSensorConfig(baseId, "last_packet_age", "Last Packet Age", mqttTopic("last_packet_age"),
+                            baseAvailability, baseId, "Cloda Base Station", "duration", "s", "measurement");
+    mqttPublishSensorConfig(baseId, "ip_address", "IP Address", mqttTopic("ip_address"),
+                            baseAvailability, baseId, "Cloda Base Station");
+
+    for (uint8_t slot = 1; slot <= 2; slot++)
+    {
+        const String componentId = trackerDeviceId(slot);
+        const String displayName = trackerName(slot);
+        const String availability = trackerTopic(slot, "availability");
+        mqttPublishSensorConfig(componentId, "dog_name", "Dog Name", trackerTopic(slot, "dog_name"),
+                                availability, componentId, displayName);
+        mqttPublishSensorConfig(componentId, "device_id", "Device ID", trackerTopic(slot, "device_id"),
+                                availability, componentId, displayName);
+        mqttPublishSensorConfig(componentId, "packet_counter", "Packet Counter", trackerTopic(slot, "packet_counter"),
+                                availability, componentId, displayName);
+        mqttPublishSensorConfig(componentId, "battery_mv", "Battery Voltage", trackerTopic(slot, "battery_mv"),
+                                availability, componentId, displayName, "voltage", "mV", "measurement");
+        mqttPublishSensorConfig(componentId, "battery_percent", "Battery", trackerTopic(slot, "battery_percent"),
+                                availability, componentId, displayName, "battery", "%", "measurement");
+        mqttPublishSensorConfig(componentId, "gps_satellites", "GPS Satellites", trackerTopic(slot, "gps_satellites"),
+                                availability, componentId, displayName, nullptr, nullptr, "measurement");
+        mqttPublishSensorConfig(componentId, "gps_hdop", "GPS HDOP", trackerTopic(slot, "gps_hdop"),
+                                availability, componentId, displayName, nullptr, nullptr, "measurement");
+        mqttPublishSensorConfig(componentId, "gps_age", "GPS Age", trackerTopic(slot, "gps_age"),
+                                availability, componentId, displayName, "duration", "ms", "measurement");
+        mqttPublishSensorConfig(componentId, "latitude", "Latitude", trackerTopic(slot, "latitude"),
+                                availability, componentId, displayName);
+        mqttPublishSensorConfig(componentId, "longitude", "Longitude", trackerTopic(slot, "longitude"),
+                                availability, componentId, displayName);
+        mqttPublishSensorConfig(componentId, "rssi", "LoRa RSSI", trackerTopic(slot, "rssi"),
+                                availability, componentId, displayName, "signal_strength", "dBm", "measurement");
+        mqttPublishSensorConfig(componentId, "snr", "LoRa SNR", trackerTopic(slot, "snr"),
+                                availability, componentId, displayName, nullptr, "dB", "measurement");
+        mqttPublishSensorConfig(componentId, "last_seen", "Last Seen", trackerTopic(slot, "last_seen"),
+                                availability, componentId, displayName, "timestamp");
+        mqttPublishSensorConfig(componentId, "mode", "Mode", trackerTopic(slot, "mode"),
+                                availability, componentId, displayName);
+        mqttPublishSensorConfig(componentId, "interval", "Update Interval", trackerTopic(slot, "interval"),
+                                availability, componentId, displayName, nullptr, "s", "measurement");
+        mqttPublishBinarySensorConfig(componentId, "gps_fix", "GPS Fix", trackerTopic(slot, "gps_fix"),
+                                      availability, componentId, displayName);
+        mqttPublishBinarySensorConfig(componentId, "radio_ready", "Radio Ready", trackerTopic(slot, "radio_ready"),
+                                      availability, componentId, displayName);
+        mqttPublishDeviceTrackerConfig(slot);
+    }
     mqttDiscoveryPublished = true;
-    Serial.println("Home Assistant MQTT discovery published");
+    Serial.println("Clean Home Assistant MQTT discovery published");
 }
 
 void publishPacketToMqtt(const CollarPacket &packet)
@@ -382,30 +472,31 @@ void publishPacketToMqtt(const CollarPacket &packet)
         return;
     }
 
-    mqttPublishString(mqttTopic("dog_name"), packet.dogName, true);
-    mqttPublishString(mqttTopic("event"), packet.event, true);
-    mqttPublishString(mqttTopic("packet_counter"), String(packet.counter), true);
-    mqttPublishString(mqttTopic("gps_fix"), packet.gpsFix ? "ON" : "OFF", true);
-    mqttPublishString(mqttTopic("latitude"), packet.latitude, true);
-    mqttPublishString(mqttTopic("longitude"), packet.longitude, true);
-    mqttPublishString(mqttTopic("battery_mv"), String(packet.batteryMv), true);
-    mqttPublishString(mqttTopic("battery_percent"), String(packet.batteryPercent), true);
-    mqttPublishString(mqttTopic("tracker_mode"), packet.trackerMode, true);
-    mqttPublishString(mqttTopic("tracker_interval"), String(packet.intervalS), true);
-    mqttPublishString(mqttTopic("tracker_uptime"), String(packet.trackerUptimeS), true);
-    mqttPublishString(mqttTopic("tracker_radio_ready"), packet.trackerRadioReady ? "ON" : "OFF", true);
-    mqttPublishString(mqttTopic("tracker_last_tx_code"), String(packet.trackerLastTxCode), true);
-    mqttPublishString(mqttTopic("gps_chars"), String(packet.gpsChars), true);
-    mqttPublishString(mqttTopic("gps_age"), String(packet.gpsAgeMs), true);
-    mqttPublishString(mqttTopic("gps_satellites"), String(packet.gpsSatellites), true);
-    mqttPublishString(mqttTopic("gps_hdop"), packet.gpsHdop, true);
-    mqttPublishString(mqttTopic("tracker_display"), packet.trackerDisplayOn ? "ON" : "OFF", true);
-    mqttPublishString(mqttTopic("tracker_ble"), packet.trackerBleConnected ? "ON" : "OFF", true);
-    mqttPublishString(mqttTopic("rssi"), String(packet.rssi), true);
-    mqttPublishString(mqttTopic("snr"), String(packet.snr, 1), true);
+    const uint8_t slot = trackerSlotForPacket(packet);
+    mqttPublishString(mqttTopic("receiving_packets"), "ON", true);
+    mqttPublishString(mqttTopic("received_packets"), String(receivedPackets), true);
+    mqttPublishString(mqttTopic("last_packet_age"), "0", true);
+    mqttPublishString(mqttTopic("ip_address"), ipText, true);
+
+    mqttPublishString(trackerTopic(slot, "availability"), "online", true);
+    mqttPublishString(trackerTopic(slot, "dog_name"), packet.dogName, true);
+    mqttPublishString(trackerTopic(slot, "device_id"), packet.deviceId, true);
+    mqttPublishString(trackerTopic(slot, "packet_counter"), String(packet.counter), true);
+    mqttPublishString(trackerTopic(slot, "gps_fix"), packet.gpsFix ? "ON" : "OFF", true);
+    mqttPublishString(trackerTopic(slot, "latitude"), packet.latitude, true);
+    mqttPublishString(trackerTopic(slot, "longitude"), packet.longitude, true);
+    mqttPublishString(trackerTopic(slot, "battery_mv"), String(packet.batteryMv), true);
+    mqttPublishString(trackerTopic(slot, "battery_percent"), String(packet.batteryPercent), true);
+    mqttPublishString(trackerTopic(slot, "mode"), packet.trackerMode, true);
+    mqttPublishString(trackerTopic(slot, "interval"), String(packet.intervalS), true);
+    mqttPublishString(trackerTopic(slot, "radio_ready"), packet.trackerRadioReady ? "ON" : "OFF", true);
+    mqttPublishString(trackerTopic(slot, "gps_age"), String(packet.gpsAgeMs), true);
+    mqttPublishString(trackerTopic(slot, "gps_satellites"), String(packet.gpsSatellites), true);
+    mqttPublishString(trackerTopic(slot, "gps_hdop"), packet.gpsHdop, true);
+    mqttPublishString(trackerTopic(slot, "rssi"), String(packet.rssi), true);
+    mqttPublishString(trackerTopic(slot, "snr"), String(packet.snr, 1), true);
     const String lastSeen = currentIsoTimestamp();
-    mqttPublishString(mqttTopic("last_seen"), lastSeen, true);
-    mqttPublishString(mqttTopic("raw_packet"), packet.raw, true);
+    mqttPublishString(trackerTopic(slot, "last_seen"), lastSeen, true);
     if (packet.gpsFix)
     {
         String locationJson = "{";
@@ -423,7 +514,7 @@ void publishPacketToMqtt(const CollarPacket &packet)
         locationJson += "\"rssi\":" + String(packet.rssi) + ",";
         locationJson += "\"snr\":" + String(packet.snr, 1);
         locationJson += "}";
-        mqttPublishString(mqttTopic("location"), locationJson, true);
+        mqttPublishString(trackerTopic(slot, "location"), locationJson, true);
     }
 
     String json = "{";
@@ -456,7 +547,22 @@ void publishPacketToMqtt(const CollarPacket &packet)
     json += "\"snr\":" + String(packet.snr, 1) + ",";
     json += "\"last_seen\":\"" + jsonEscape(lastSeen) + "\"";
     json += "}";
-    mqttPublishString(mqttTopic("state"), json, true);
+    mqttPublishString(trackerTopic(slot, "state"), json, true);
+}
+
+void publishBaseStatusToMqtt()
+{
+    if (!mqttClient.connected())
+    {
+        return;
+    }
+
+    const uint32_t ageS = latestPacket.valid ? (millis() - latestPacket.receivedAtMs) / 1000 : 999999;
+    mqttPublishString(mqttTopic("availability"), "online", true);
+    mqttPublishString(mqttTopic("ip_address"), ipText, true);
+    mqttPublishString(mqttTopic("received_packets"), String(receivedPackets), true);
+    mqttPublishString(mqttTopic("last_packet_age"), String(ageS), true);
+    mqttPublishString(mqttTopic("receiving_packets"), latestPacket.valid && ageS < 180 ? "ON" : "OFF", true);
 }
 
 void handleMqtt()
@@ -493,7 +599,7 @@ void handleMqtt()
         if (connected)
         {
             Serial.println("MQTT connected");
-            mqttClient.publish(mqttTopic("availability").c_str(), "online", true);
+            publishBaseStatusToMqtt();
             publishHomeAssistantDiscovery();
             if (latestPacket.valid)
             {
@@ -512,7 +618,7 @@ void handleMqtt()
     if (millis() - mqttLastHeartbeat > 30000)
     {
         mqttLastHeartbeat = millis();
-        mqttPublishString(mqttTopic("availability"), "online", true);
+        publishBaseStatusToMqtt();
     }
 }
 
