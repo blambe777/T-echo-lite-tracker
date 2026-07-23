@@ -44,10 +44,10 @@ static const char *MQTT_HOST = BASE_MQTT_HOST;
 static const uint16_t MQTT_PORT = 1883;
 static const char *MQTT_USER = BASE_MQTT_USER;
 static const char *MQTT_PASSWORD = BASE_MQTT_PASSWORD;
-static const char *MQTT_CLIENT_ID = "cloda_heltec_base";
-static const char *MQTT_BASE_TOPIC = "cloda_base";
-static const char *MQTT_TRACKER_1_TOPIC = "cloda_tracker_1";
-static const char *MQTT_TRACKER_2_TOPIC = "cloda_tracker_2";
+static const char *MQTT_CLIENT_ID = "clodagh_heltec_base";
+static const char *MQTT_BASE_TOPIC = "clodagh_base";
+static const char *MQTT_TRACKER_1_TOPIC = "clodagh_tracker_1";
+static const char *MQTT_TRACKER_2_TOPIC = "clodagh_tracker_2";
 static const char *MQTT_DISCOVERY_PREFIX = "homeassistant";
 
 // Known collar IDs. These let Home Assistant show each collar as its own tidy
@@ -254,12 +254,12 @@ uint8_t trackerSlotForPacket(const CollarPacket &packet)
 
 String trackerDeviceId(uint8_t slot)
 {
-    return slot == 2 ? String("cloda_tracker_2") : String("cloda_tracker_1");
+    return slot == 2 ? String("clodagh_tracker_2") : String("clodagh_tracker_1");
 }
 
 String trackerName(uint8_t slot)
 {
-    return slot == 2 ? String("Cloda Tracker 2") : String("Cloda Tracker 1");
+    return slot == 2 ? String("Clodagh Tracker 2") : String("Clodagh Tracker 1");
 }
 
 String jsonEscape(const String &value)
@@ -351,8 +351,8 @@ void mqttPublishSensorConfig(const String &componentId, const String &objectId, 
         payload += "\"";
     }
     payload += ",";
-    payload += deviceJson(deviceIdentifier, deviceName, deviceIdentifier == "cloda_base" ? "Heltec" : "LILYGO",
-                          deviceIdentifier == "cloda_base" ? "WiFi LoRa 32 V3" : "T-Echo Lite");
+    payload += deviceJson(deviceIdentifier, deviceName, deviceIdentifier == "clodagh_base" ? "Heltec" : "LILYGO",
+                          deviceIdentifier == "clodagh_base" ? "WiFi LoRa 32 V3" : "T-Echo Lite");
     payload += "}";
     mqttClient.publish(topic.c_str(), payload.c_str(), true);
 }
@@ -382,8 +382,8 @@ void mqttPublishBinarySensorConfig(const String &componentId, const String &obje
         payload += "\"";
     }
     payload += ",";
-    payload += deviceJson(deviceIdentifier, deviceName, deviceIdentifier == "cloda_base" ? "Heltec" : "LILYGO",
-                          deviceIdentifier == "cloda_base" ? "WiFi LoRa 32 V3" : "T-Echo Lite");
+    payload += deviceJson(deviceIdentifier, deviceName, deviceIdentifier == "clodagh_base" ? "Heltec" : "LILYGO",
+                          deviceIdentifier == "clodagh_base" ? "WiFi LoRa 32 V3" : "T-Echo Lite");
     payload += "}";
     mqttClient.publish(topic.c_str(), payload.c_str(), true);
 }
@@ -409,16 +409,16 @@ void mqttPublishDeviceTrackerConfig(uint8_t slot)
 
 void publishHomeAssistantDiscovery()
 {
-    const String baseId = "cloda_base";
+    const String baseId = "clodagh_base";
     const String baseAvailability = mqttTopic("availability");
     mqttPublishBinarySensorConfig(baseId, "receiving_packets", "Receiving Packets", mqttTopic("receiving_packets"),
-                                  baseAvailability, baseId, "Cloda Base Station", "connectivity");
+                                  baseAvailability, baseId, "Clodagh Base Station", "connectivity");
     mqttPublishSensorConfig(baseId, "received_packets", "Received Packets", mqttTopic("received_packets"),
-                            baseAvailability, baseId, "Cloda Base Station", nullptr, nullptr, "total_increasing");
+                            baseAvailability, baseId, "Clodagh Base Station", nullptr, nullptr, "total_increasing");
     mqttPublishSensorConfig(baseId, "last_packet_age", "Last Packet Age", mqttTopic("last_packet_age"),
-                            baseAvailability, baseId, "Cloda Base Station", "duration", "s", "measurement");
+                            baseAvailability, baseId, "Clodagh Base Station", "duration", "s", "measurement");
     mqttPublishSensorConfig(baseId, "ip_address", "IP Address", mqttTopic("ip_address"),
-                            baseAvailability, baseId, "Cloda Base Station");
+                            baseAvailability, baseId, "Clodagh Base Station");
 
     for (uint8_t slot = 1; slot <= 2; slot++)
     {
