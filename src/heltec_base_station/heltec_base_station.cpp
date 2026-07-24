@@ -73,6 +73,8 @@ static const uint8_t LORA_CODING_RATE = 6;
 static const uint8_t LORA_SYNC_WORD = 0x12; // Standard private LoRa sync word; compatible with SX1262 and SX1276.
 static const uint16_t LORA_PREAMBLE_LENGTH = 16;
 static const float LORA_TCXO_VOLTAGE = 1.8;
+static const uint32_t GPS_MIN_SATELLITES = 6;
+static const float GPS_MAX_HDOP = 2.00f;
 
 // Heltec WiFi LoRa 32 V3 pins from Heltec board definitions.
 static const int LORA_NSS = 8;
@@ -288,6 +290,12 @@ String buildCommandPacket(uint8_t slot)
     char crcText[8];
     snprintf(crcText, sizeof(crcText), "%04X", crc16Ccitt(body));
     return body + "*" + crcText;
+}
+
+bool packetHasAccurateGps(const CollarPacket &packet)
+{
+    return packet.gpsFix && packet.gpsSatellites >= GPS_MIN_SATELLITES &&
+           packet.gpsHdop.toFloat() > 0.0f && packet.gpsHdop.toFloat() <= GPS_MAX_HDOP;
 }
 
 String jsonEscape(const String &value)
@@ -529,7 +537,8 @@ void publishPacketToMqtt(const CollarPacket &packet)
     mqttPublishString(trackerTopic(slot, "dog_name"), packet.dogName, true);
     mqttPublishString(trackerTopic(slot, "device_id"), packet.deviceId, true);
     mqttPublishString(trackerTopic(slot, "packet_counter"), String(packet.counter), true);
-    mqttPublishString(trackerTopic(slot, "gps_fix"), packet.gpsFix ? "ON" : "OFF", true);
+    const bool accurateGps = packetHasAccurateGps(packet);
+    mqttPublishString(trackerTopic(slot, "gps_fix"), accurateGps ? "ON" : "OFF", true);
     mqttPublishString(trackerTopic(slot, "latitude"), packet.latitude, true);
     mqttPublishString(trackerTopic(slot, "longitude"), packet.longitude, true);
     mqttPublishString(trackerTopic(slot, "battery_mv"), String(packet.batteryMv), true);
@@ -544,7 +553,7 @@ void publishPacketToMqtt(const CollarPacket &packet)
     mqttPublishString(trackerTopic(slot, "snr"), String(packet.snr, 1), true);
     const String lastSeen = currentIsoTimestamp();
     mqttPublishString(trackerTopic(slot, "last_seen"), lastSeen, true);
-    if (packet.gpsFix)
+    if (accurateGps)
     {
         String locationJson = "{";
         locationJson += "\"latitude\":" + packet.latitude + ",";
@@ -570,7 +579,7 @@ void publishPacketToMqtt(const CollarPacket &packet)
     json += "\"event\":\"" + jsonEscape(packet.event) + "\",";
     json += "\"counter\":" + String(packet.counter) + ",";
     json += "\"gps_fix\":";
-    json += packet.gpsFix ? "true" : "false";
+    json += accurateGps ? "true" : "false";
     json += ",\"latitude\":\"" + jsonEscape(packet.latitude) + "\",";
     json += "\"longitude\":\"" + jsonEscape(packet.longitude) + "\",";
     json += "\"battery_mv\":" + String(packet.batteryMv) + ",";

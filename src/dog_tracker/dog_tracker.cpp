@@ -11,6 +11,9 @@ static const char DOG_NAME[] = "Clodagh-Test";
 static const float LORA_FREQUENCY_MHZ = 868.0;
 static const uint8_t LORA_SYNC_WORD = 0x12; // Standard private LoRa sync word; compatible with SX1262 and SX1276.
 static const uint32_t GPS_FRESH_FIX_MAX_AGE_MS = 30000;
+static const uint32_t GPS_MIN_SATELLITES = 6;
+static const float GPS_MAX_HDOP = 2.00f;
+static const uint8_t GPS_MIN_ACCURATE_STREAK = 2;
 static const bool BLE_STATUS_LED_ENABLED = false;
 static const bool GPS_RAW_NMEA_DEBUG = true;
 static const uint32_t GPS_RAW_NMEA_WINDOW_MS = 120000;
@@ -93,6 +96,7 @@ String gpsRawLine = "";
 TrackerMode currentMode = MODE_ACTIVITY;
 bool gpsPowered = true;
 bool homeBleSeen = false;
+uint8_t gpsAccurateStreak = 0;
 uint32_t appliedCommandCounter = 0;
 
 void emergencyButtonISR()
@@ -433,6 +437,7 @@ LocationSnapshot readLocationSnapshot()
         snapshot.satellites = 0;
         snapshot.hdop = 0.0f;
         snapshot.fresh = false;
+        gpsAccurateStreak = 0;
         return snapshot;
     }
 
@@ -440,7 +445,21 @@ LocationSnapshot readLocationSnapshot()
     snapshot.satellites = gps.satellites.isValid() ? gps.satellites.value() : 0;
     snapshot.hdop = gps.hdop.isValid() ? gps.hdop.hdop() : 0.0f;
     snapshot.fresh = gps.location.isValid() && snapshot.ageMs <= GPS_FRESH_FIX_MAX_AGE_MS;
-    snapshot.valid = snapshot.fresh;
+    const bool hasEnoughSatellites = snapshot.satellites >= GPS_MIN_SATELLITES;
+    const bool hasGoodHdop = gps.hdop.isValid() && snapshot.hdop > 0.0f && snapshot.hdop <= GPS_MAX_HDOP;
+    const bool accurateNow = snapshot.fresh && hasEnoughSatellites && hasGoodHdop;
+    if (accurateNow)
+    {
+        if (gpsAccurateStreak < GPS_MIN_ACCURATE_STREAK)
+        {
+            gpsAccurateStreak++;
+        }
+    }
+    else
+    {
+        gpsAccurateStreak = 0;
+    }
+    snapshot.valid = gpsAccurateStreak >= GPS_MIN_ACCURATE_STREAK;
     snapshot.latitude = snapshot.valid ? gps.location.lat() : 0.0;
     snapshot.longitude = snapshot.valid ? gps.location.lng() : 0.0;
     snapshot.altitudeMeters = gps.altitude.isValid() ? gps.altitude.meters() : 0.0;
@@ -471,6 +490,8 @@ void logGpsDebug()
     Serial.print(location.ageMs);
     Serial.print(" fresh=");
     Serial.print(location.fresh ? "YES" : "NO");
+    Serial.print(" accurate=");
+    Serial.print(location.valid ? "YES" : "NO");
     if (location.valid)
     {
         Serial.print(" lat=");
